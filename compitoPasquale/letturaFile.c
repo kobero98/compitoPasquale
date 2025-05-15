@@ -29,17 +29,18 @@ int num_thread;
 volatile int end_turn;
 volatile int actual_turn;
 volatile char * data_input;
-volatile int size_per_thread;
+volatile int round_per_thread;
 volatile int rest_size_per_thread;
+volatile int round_extra;
 char *nome_file;
 
 typedef struct param{
 	int my_id;
 	int count;
 }param;
-
+volatile int num_row=0;
 void * func_thread(void* p){
-	int fd,size_read,my_id,pos,max_read;
+	int fd,size_read,my_id,pos,num_round;
 	fd=open(nome_file,O_RDONLY);
 	if(fd==0){
 		printf("Errore apertura file\n");
@@ -50,28 +51,33 @@ void * func_thread(void* p){
 	int i,j;
 	int count=0;
 	int cella=0;
-	max_read=size_per_thread;
-	if(my_id<rest_size_per_thread){
-		max_read+=1;
+	num_round=round_per_thread;
+	if(my_id < round_extra){
+		num_round++;
 	}
-	if(my_id<rest_size_per_thread){
-		pos=my_id*max_read;
+	if(my_id<round_extra){
+		pos=my_id*num_round*CHUNCK;
 	}else{
-		pos=my_id*max_read+rest_size_per_thread;
+		pos=my_id*num_round*CHUNCK+CHUNCK*round_extra;
 	}
-	DEBUG printf("Analizzatore %d inizio:\nposizione:%d\n",my_id,pos);
+	DEBUG printf("Analizzatore %d inizio in posizione:%d\nleggo:%d byte\n",my_id,pos,num_round*CHUNCK);
 	lseek(fd,pos,SEEK_SET);
-	outputs[my_id]=(int*)calloc(sizeof(int),max_read);
-
+	outputs[my_id]=(int*)calloc(sizeof(int),num_round*CHUNCK);
 	if(outputs[my_id]==NULL){
 		printf("Errore malloc output data\n");
 		return NULL;
 	}
 
 	j=0;
-	while(j<max_read){
+	if(my_id == num_thread-1){
+		DEBUG printf("ciao mondo\n");
+		j=-1;
+	}
+	while(j<num_round){
 		size_read=read(fd,&buff,CHUNCK);
+		DEBUG if(my_id == num_thread-1)printf("%d\n",size_read);
 		if(size_read<=0){
+			DEBUG printf("smetto di leggere%d\n",my_id);
 			break;
 		}
 		for(i=0;i<size_read;i++){
@@ -83,20 +89,23 @@ void * func_thread(void* p){
 				cella++;
 				count=0;
 				outputs[my_id][cella]=-1;
+				__sync_fetch_and_add(&(num_row),1);
 			}
 			if(buff[i]=='\0'){
+				DEBUG printf("ENDOFFILE?");
 				outputs[my_id][cella]=count;
 				cella++;
 				count=0;
 				outputs[my_id][cella]=-1;
+				__sync_fetch_and_add(&(num_row),1);
 				break;
 			}
 		}
-		j=j+CHUNCK;
+		j=j+1;
 	}
 	outputs[my_id][cella]=count;
-mk	((param*)p)->count=cella;
-	DEBUG printf("Analizzato Termino %d celle fatte %d\n",my_id,cella);
+	((param*)p)->count=cella;
+	DEBUG printf("Analizzato Termino %d celle fatte %d\n ho letto tot byte%d\n",my_id,cella,j);
 	return NULL;
 }
 
@@ -116,6 +125,7 @@ int main(int argc,char*argv[]){
 	}
 	nome_file = argv[1];
 	num_cpu=get_nprocs();
+	num_row=0;
 	DEBUG printf("This system has %d processors configured and %d processors available.\n",
         get_nprocs_conf(),num_cpu);
 
@@ -127,10 +137,7 @@ int main(int argc,char*argv[]){
 		printf("Errore nella write: errno = %d, descrizione = %s\n", errno, strerror(errno));
 		return 0;
 	}
-	// if(fstat(fd,&stats)<0){
-	// 	printf("Errore stat del file\n");
-	// 	return 0;
-	// }
+
 	int output_fd=open(argv[2],O_RDWR|O_CREAT|O_TRUNC,0666);
 	if(output_fd<0){
 		printf("Errore apertura file\n");
@@ -140,11 +147,11 @@ int main(int argc,char*argv[]){
 	num_thread=num_cpu;
 	size_t s=lseek(fd,0,SEEK_END);
 	lseek(fd,0,SEEK_SET);
-	size_per_thread=s/num_thread;
-	rest_size_per_thread=s % num_thread;
-	DEBUG printf("Il file è di %d\nOgni thread ha in cario %d\n",s,size_per_thread);
+	round_per_thread = s/(CHUNCK*num_thread);
+	round_extra = s/CHUNCK % num_thread;
+	DEBUG printf("Il file è di %d\nOgni thread ha in cario %d\n",s,round_per_thread);
 
-	param * p=(param*)malloc(sizeof(param)*num_thread);
+	param * p=(param*) malloc(sizeof(param)*num_thread);
 	tids=(pthread_t*) malloc(sizeof(pthread_t)*num_thread);
 	if(tids==NULL || p==NULL){
 		printf("Errore malloc tids or param\n");
@@ -186,15 +193,16 @@ int main(int argc,char*argv[]){
 			}
 			k++;
 		}
-		//old_c=outputs[i][p[i].count];
+		old_c=outputs[i][p[i].count];
+		DEBUG printf("old_c: %d\n",old_c);
 		DEBUG printf("thread %d termina\n",i);
 		write(output_fd,string_output,size_string);
 	}
-
 	free(string_output);
 	free(tids);
 	for(i=0;i<num_thread;i++) free(outputs[i]);
 	free(outputs);
 	DEBUG printf("Lettore: <termino>\n");
+	DEBUG printf("NUM_ROW:%d\n",num_row);
 	return 0;
 }
